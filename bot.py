@@ -32,7 +32,7 @@ DIAGNOSIS_DATA = {
 }
 
 async def get_chat_members(bot, chat_id):
-    """Безопасное получение участников через Bot API"""
+    """Получение участников чата для PTB 20.x"""
     try:
         members = []
         async for member in bot.get_chat_members(chat_id):
@@ -44,10 +44,10 @@ async def get_chat_members(bot, chat_id):
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start"""
+    """Обработчик команды /start"""
     await update.message.reply_text(
         "👨⚕️ Бот-диагност для групп\n\n"
-        "Команды:\n"
+        "Используйте команды:\n"
         "/diagnose [@юзер] [уровень 1-3]\n"
         "Примеры:\n"
         "/diagnose 2 - случайному участнику\n"
@@ -55,48 +55,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /diagnose"""
+    """Обработчик команды /diagnose"""
     try:
         chat = update.effective_chat
-        args = context.args or []
+        args = context.args
         
-        # Проверка типа чата
         if chat.type not in ['group', 'supergroup']:
-            await update.message.reply_text("🚫 Работает только в группах!")
+            await update.message.reply_text("🚫 Команда работает только в группах!")
             return
 
         # Получаем участников
         members = await get_chat_members(context.bot, chat.id)
         if not members:
-            await update.message.reply_text("😢 Нет участников для диагностики")
+            await update.message.reply_text("😢 В чате нет участников для диагностики")
             return
 
         # Парсинг аргументов
         level = 2
         target_user = None
         
-        for arg in args:
-            if arg.startswith('@'):
-                username = arg[1:].lower()
-                target_user = next((u for u in members if u.username and u.username.lower() == username), None)
-            elif arg.isdigit():
-                level = max(1, min(3, int(arg)))
+        if args:
+            # Поиск упоминания
+            for i, arg in enumerate(args):
+                if arg.startswith('@'):
+                    username = arg[1:].lower()
+                    target_user = next((u for u in members if u.username and u.username.lower() == username), None)
+                    if target_user and len(args) > i+1:
+                        try: level = int(args[i+1])
+                        except: pass
+                    break
+            # Если не нашли упоминание
+            if not target_user:
+                try: level = int(args[0])
+                except: pass
 
         # Выбор пользователя
         user = target_user or random.choice(members)
         username = f"@{user.username}" if user.username else user.first_name
 
         # Генерация диагноза
-        data = DIAGNOSIS_DATA[max(1, min(3, level))]
+        level = max(1, min(3, level))
+        data = DIAGNOSIS_DATA[level]
         diagnosis = (
             f"{random.choice(data['problems'])} "
             f"{random.choice(data['parts'])} "
             f"{random.choice(data['severity'])}"
-        )
+        ).capitalize()
 
         await update.message.reply_text(
             f"🔍 Диагноз для {username} (уровень {level}):\n"
-            f"{diagnosis.capitalize()}!"
+            f"{diagnosis}!"
         )
 
     except Exception as e:
@@ -109,7 +117,7 @@ def main():
     application.add_handler(CommandHandler("diagnose", diagnose))
     
     logger.info("Бот запущен...")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     if not TOKEN:
