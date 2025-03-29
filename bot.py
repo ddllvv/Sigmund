@@ -6,41 +6,42 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Настройка логгирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv('BOT_TOKEN')
+TOKEN = os.getenv("BOT_TOKEN")
 
 DIAGNOSIS_DATA = {
     1: {
-        'problems': ['Покраснение', 'Зуд', 'Икота'],
-        'parts': ['уха', 'носа', 'пальца'],
-        'severity': ['начальной стадии']
+        "problems": ["Покраснение", "Зуд", "Икота"],
+        "parts": ["уха", "носа", "пальца"],
+        "severity": ["начальной стадии"]
     },
     2: {
-        'problems': ['Паралич', 'Гастрит', 'Аритмия'],
-        'parts': ['ребра', 'колена', 'селезёнки'],
-        'severity': ['средней тяжести']
+        "problems": ["Паралич", "Гастрит", "Аритмия"],
+        "parts": ["ребра", "колена", "селезёнки"],
+        "severity": ["средней тяжести"]
     },
     3: {
-        'problems': ['Гангрена', 'Дегенерация', 'Тромбоз'],
-        'parts': ['гипоталамуса', 'надкостницы', 'яичка'],
-        'severity': ['терминальной стадии']
+        "problems": ["Гангрена", "Дегенерация", "Тромбоз"],
+        "parts": ["гипоталамуса", "надкостницы", "яичка"],
+        "severity": ["терминальной стадии"]
     }
 }
 
 async def get_chat_members(bot, chat_id):
-    """Получение участников чата для PTB 20.x"""
+    """Правильное получение участников для PTB 20.x+"""
     try:
+        chat = await bot.get_chat(chat_id)
         members = []
-        async for member in bot.get_chat_members(chat_id):
+        async for member in chat.get_members():
             if not member.user.is_bot:
                 members.append(member.user)
         return members
     except Exception as e:
-        logger.error(f"Ошибка получения участников: {str(e)}")
+        logger.error(f"Ошибка: {str(e)}")
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,36 +59,32 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /diagnose"""
     try:
         chat = update.effective_chat
-        args = context.args
+        args = context.args or []
         
-        if chat.type not in ['group', 'supergroup']:
-            await update.message.reply_text("🚫 Команда работает только в группах!")
+        # Проверка типа чата
+        if chat.type not in ["group", "supergroup"]:
+            await update.message.reply_text("🚫 Работает только в группах!")
             return
 
         # Получаем участников
         members = await get_chat_members(context.bot, chat.id)
         if not members:
-            await update.message.reply_text("😢 В чате нет участников для диагностики")
+            await update.message.reply_text("😢 Нет участников для диагностики")
             return
 
         # Парсинг аргументов
         level = 2
         target_user = None
         
-        if args:
-            # Поиск упоминания
-            for i, arg in enumerate(args):
-                if arg.startswith('@'):
-                    username = arg[1:].lower()
-                    target_user = next((u for u in members if u.username and u.username.lower() == username), None)
-                    if target_user and len(args) > i+1:
-                        try: level = int(args[i+1])
-                        except: pass
-                    break
-            # Если не нашли упоминание
-            if not target_user:
-                try: level = int(args[0])
-                except: pass
+        for arg in args:
+            if arg.startswith("@"):
+                username = arg[1:].lower()
+                target_user = next(
+                    (u for u in members if u.username and u.username.lower() == username),
+                    None
+                )
+            elif arg.isdigit():
+                level = max(1, min(3, int(arg)))
 
         # Выбор пользователя
         user = target_user or random.choice(members)
@@ -119,7 +116,7 @@ def main():
     logger.info("Бот запущен...")
     application.run_polling(drop_pending_updates=True)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     if not TOKEN:
         logger.error("❌ Требуется переменная BOT_TOKEN!")
         exit(1)
