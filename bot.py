@@ -1,10 +1,7 @@
 import os
 import random
 import logging
-import asyncio
-from datetime import datetime, timedelta
 from telegram import Update
-from telegram.error import RetryAfter
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Настройка логгирования
@@ -34,92 +31,56 @@ DIAGNOSIS_DATA = {
     }
 }
 
-class MembersCache:
-    """Кеширование участников чата"""
-    def __init__(self):
-        self.cache = {}
-    
-    def get(self, chat_id: int):
-        entry = self.cache.get(chat_id)
-        if entry and datetime.now() - entry['time'] < timedelta(minutes=30):
-            return entry['members']
-        return None
-    
-    def set(self, chat_id: int, members):
-        self.cache[chat_id] = {
-            'time': datetime.now(),
-            'members': members
-        }
-
-members_cache = MembersCache()
-
-async def get_chat_members(bot, chat_id: int):
-    """Получение участников чата с обработкой ошибок"""
-    try:
-        if cached := members_cache.get(chat_id):
-            return cached
-        
-        members = []
-        async for member in bot.get_chat_members(chat_id):
-            if not member.user.is_bot:
-                members.append(member.user)
-        
-        if members:
-            members_cache.set(chat_id, members)
-        
-        return members
-    
-    except RetryAfter as e:
-        logger.warning(f"RetryAfter error: {e}")
-        await asyncio.sleep(e.retry_after)
-        return await get_chat_members(bot, chat_id)
-    
-    except Exception as e:
-        logger.error(f"Ошибка получения участников: {e}")
-        return None
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start"""
+    """Обработчик команды /start"""
     await update.message.reply_text(
-        "👨⚕️ Бот-диагност\n\n"
-        "Команды:\n"
-        "/diagnose или /dg [@юзер] [уровень 1-3]\n\n"
+        "👨⚕️ Бот-диагност для групп\n\n"
+        "Используйте команды:\n"
+        "/diagnose или /dg [@юзер] [уровень 1-3]\n"
         "Примеры:\n"
-        "/dg @user 3 - диагноз для @user\n"
-        "/diagnose 2 - случайный участник"
+        "/dg 2 - случайный участник\n"
+        "/diagnose @username 3"
     )
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Основная логика бота"""
+    """Улучшенный обработчик с обходом ограничений"""
     try:
         chat = update.effective_chat
-        user = update.effective_user
         args = context.args or []
         
         if chat.type not in ["group", "supergroup"]:
-            await update.message.reply_text("🚫 Только в группах!")
+            await update.message.reply_text("🚫 Работает только в группах!")
             return
 
         # Парсинг аргументов
         level = 2
-        target_username = None
+        target = None
         
         for arg in args:
-            if arg.startswith('@'):
-                target_username = arg  # Сохраняем оригинал (@Username)
+            if arg.startswith("@"):
+                target = arg  # Сохраняем оригинальное упоминание
             elif arg.isdigit() and 1 <= int(arg) <= 3:
                 level = int(arg)
 
-        # Определение цели
-        if target_username:
-            display_name = target_username
+        # Если есть упоминание - используем как есть
+        if target:
+            username = target
         else:
-            members = await get_chat_members(context.bot, chat.id) or []
-            if members:
-                selected = random.choice(members)
-                display_name = f"@{selected.username}" if selected.username else selected.full_name
-            else:
-                display_name = f"@{user.username}" if user.username else user.full_name
+            # Пытаемся найти случайного пользователя из истории чата
+            try:
+                members = []
+                async for message in chat.get_messages(limit=100):
+                    user = message.from_user
+                    if user and not user.is_bot and user.username:
+                        members.append(f"@{user.username}")
+                
+                if members:
+                    username = random.choice(members)
+                else:
+                    username = "случайного участника"
+            except Exception as e:
+                username = "случайного участника"
+                logger.warning(f"Не удалось получить историю чата: {e}")
 
         # Генерация диагноза
         data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
@@ -130,24 +91,27 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).capitalize()
 
         await update.message.reply_text(
-            f"🔍 Диагноз для {display_name} (уровень {level}):\n"
+            f"🔍 Диагноз для {username} (уровень {level}):\n"
             f"{diagnosis}!"
         )
 
-    except RetryAfter as e:
-        await update.message.reply_text(f"⏳ Слишком быстро! Ждите {e.retry_after} сек.")
     except Exception as e:
         logger.error(f"Ошибка: {str(e)}")
-        await update.message.reply_text("❌ Ошибка выполнения")
+        await update.message.reply_text("⚠️ Ошибка выполнения команды")
 
 def main():
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler(["diagnose", "dg"], diagnose))
-    application.run_polling()
+    
+    logger.info("Бот запущен...")
+    application.run_polling(
+        drop_pending_updates=True,  # Решение проблемы Conflict
+        allowed_updates=Update.ALL_TYPES
+    )
 
 if __name__ == "__main__":
     if not TOKEN:
-        logger.error("❌ Укажите BOT_TOKEN в переменных окружения!")
+        logger.error("❌ Требуется переменная BOT_TOKEN!")
         exit(1)
     main()
