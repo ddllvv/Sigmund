@@ -91,7 +91,7 @@ async def webhook():
 if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', 5000))
     application.run_webhook(
-        listen='0.0.0.0",
+        listen='0.0.0.0',
         port=PORT,
         url_path=TOKEN,
         webhook_url=os.environ.get('WEBHOOK_URL') + '/webhook'
