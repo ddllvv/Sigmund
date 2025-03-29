@@ -2,13 +2,7 @@ import os
 import random
 import logging
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    ChatMemberHandler,
-    ChatJoinRequestHandler
-)
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Настройка логгирования
 logging.basicConfig(
@@ -37,90 +31,56 @@ DIAGNOSIS_DATA = {
     }
 }
 
-class ChatTracker:
-    """Класс для управления участниками чата"""
-    def __init__(self):
-        self.chat_members = {}
-
-    async def update_members(self, chat_id: int, bot):
-        """Обновление списка участников"""
-        try:
-            members = []
-            async for member in bot.get_chat_members(chat_id):
-                if not member.user.is_bot:
-                    members.append(member.user)
-            self.chat_members[chat_id] = members
-            logger.info(f"Обновлен список участников для чата {chat_id}")
-        except Exception as e:
-            logger.error(f"Ошибка обновления: {str(e)}")
-
-    def get_random_member(self, chat_id: int):
-        """Получение случайного участника"""
-        members = self.chat_members.get(chat_id, [])
-        return random.choice(members) if members else None
-
-tracker = ChatTracker()
-
-async def handle_chat_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик событий чата"""
-    chat_id = update.effective_chat.id
-    await tracker.update_members(chat_id, context.bot)
+async def get_chat_members(bot, chat_id):
+    """Получение списка участников (исключая ботов)"""
+    try:
+        members = []
+        async for member in bot.get_chat_members(chat_id):
+            if not member.user.is_bot:
+                members.append(member.user)
+        return members
+    except Exception as e:
+        logger.error(f"Ошибка: {str(e)}")
+        return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Инициализация бота в чате"""
-    chat_id = update.effective_chat.id
-    await tracker.update_members(chat_id, context.bot)
-    await update.message.reply_text(
-        "👨⚕️ Бот-диагност активирован!\n"
-        "Используйте /dg [@юзер] [уровень 1-3]\n"
-        "Пример: /dg @user 2"
+    """Обработчик команды /start"""
+    help_text = (
+        "👨⚕️ Бот-диагност\n\n"
+        "Команды:\n"
+        "/dg [@юзер] [уровень] - диагноз пользователю\n"
+        "/random_dg [уровень] - случайному участнику\n"
+        "\nПримеры:\n"
+        "/random_dg 3 - случайный участник с уровнем 3\n"
+        "/dg @user 1 - диагноз уровня 1 для @user"
     )
+    await update.message.reply_text(help_text)
 
-async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды диагноза"""
+async def random_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /random_dg"""
     try:
         chat = update.effective_chat
-        user = update.effective_user
         args = context.args or []
         
         if chat.type not in ["group", "supergroup"]:
             await update.message.reply_text("🚫 Только в группах!")
             return
 
-        # Парсинг аргументов
+        # Получаем участников
+        members = await get_chat_members(context.bot, chat.id)
+        if not members:
+            await update.message.reply_text("😢 Нет участников для диагностики")
+            return
+
+        # Парсинг уровня
         level = 2
-        target_username = None
-        
         for arg in args:
-            if arg.startswith("@"):
-                target_username = arg[1:].lower()
-            elif arg.isdigit() and 1 <= int(arg) <= 3:
+            if arg.isdigit() and 1 <= int(arg) <= 3:
                 level = int(arg)
 
-        # Выбор пользователя
-        selected_member = None
-        
-        if target_username:
-            # Поиск по username
-            selected_member = next(
-                (m for m in tracker.chat_members.get(chat.id, []) 
-                 if m.username and m.username.lower() == target_username),
-                None
-            )
-        else:
-            # Случайный выбор из участников
-            selected_member = tracker.get_random_member(chat.id)
-        
-        # Fallback: если не нашли, используем отправителя
-        if not selected_member:
-            selected_member = user
-
-        # Форматирование имени
-        username = (
-            f"@{selected_member.username}" 
-            if selected_member.username 
-            else selected_member.full_name
-        )
+        # Выбираем случайного участника
+        random_user = random.choice(members)
+        username = f"@{random_user.username}" if random_user.username else random_user.full_name
 
         # Генерация диагноза
         data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
@@ -131,7 +91,43 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).capitalize()
 
         await update.message.reply_text(
-            f"🔍 Диагноз для {username} (уровень {level}):\n"
+            f"🎲 Случайный диагноз для {username} (уровень {level}):\n"
+            f"{diagnosis}!"
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка: {str(e)}")
+        await update.message.reply_text("⚠️ Ошибка выполнения команды")
+
+async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /dg"""
+    try:
+        user = update.effective_user
+        args = context.args or []
+        
+        # Изначально цель - отправитель
+        target_username = user.username or user.full_name
+        display_name = f"@{user.username}" if user.username else user.full_name
+        level = 2
+
+        # Парсинг аргументов
+        for arg in args:
+            if arg.startswith("@"):
+                target_username = arg
+                display_name = arg
+            elif arg.isdigit() and 1 <= int(arg) <= 3:
+                level = int(arg)
+
+        # Генерация диагноза
+        data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
+        diagnosis = (
+            f"{random.choice(data['problems'])} "
+            f"{random.choice(data['parts'])} "
+            f"{random.choice(data['severity'])}"
+        ).capitalize()
+
+        await update.message.reply_text(
+            f"🔍 Диагноз для {display_name} (уровень {level}):\n"
             f"{diagnosis}!"
         )
 
@@ -144,8 +140,7 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dg", diagnose))
-    application.add_handler(ChatMemberHandler(handle_chat_events))
-    application.add_handler(ChatJoinRequestHandler(handle_chat_events))
+    application.add_handler(CommandHandler("random_dg", random_diagnose))
     
     application.run_polling(
         drop_pending_updates=True,
