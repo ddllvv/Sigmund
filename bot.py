@@ -35,7 +35,7 @@ DIAGNOSIS_DATA = {
 }
 
 class MembersCache:
-    """Кеш участников чата"""
+    """Кеширование участников чата"""
     def __init__(self):
         self.cache = {}
     
@@ -75,60 +75,53 @@ async def get_chat_members(bot, chat_id: int):
         return await get_chat_members(bot, chat_id)
     
     except Exception as e:
-        logger.error(f"Error getting members: {e}")
+        logger.error(f"Ошибка получения участников: {e}")
         return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+    """Обработчик /start"""
     await update.message.reply_text(
-        "👨⚕️ Бот-диагност для групп\n\n"
-        "Используйте команды:\n"
-        "/diagnose или /dg [@юзер] [уровень 1-3]\n"
+        "👨⚕️ Бот-диагност\n\n"
+        "Команды:\n"
+        "/diagnose или /dg [@юзер] [уровень 1-3]\n\n"
         "Примеры:\n"
-        "/dg 2 - случайному участнику\n"
-        "/diagnose @username 3"
+        "/dg @user 3 - диагноз для @user\n"
+        "/diagnose 2 - случайный участник"
     )
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Основной обработчик диагностики"""
+    """Основная логика бота"""
     try:
         chat = update.effective_chat
         user = update.effective_user
+        args = context.args or []
         
         if chat.type not in ["group", "supergroup"]:
-            await update.message.reply_text("🚫 Работает только в группах!")
+            await update.message.reply_text("🚫 Только в группах!")
             return
 
-        args = context.args or []
+        # Парсинг аргументов
         level = 2
         target_username = None
-
-        # Парсинг аргументов
+        
         for arg in args:
             if arg.startswith('@'):
-                target_username = arg[1:].lower()
+                target_username = arg  # Сохраняем оригинал (@Username)
             elif arg.isdigit() and 1 <= int(arg) <= 3:
                 level = int(arg)
 
-        # Получение участников
-        members = await get_chat_members(context.bot, chat.id)
-        
-        # Поиск пользователя
-        selected_user = None
+        # Определение цели
         if target_username:
-            selected_user = next(
-                (u for u in members if u.username and u.username.lower() == target_username),
-                None
-            )
-        
-        if not selected_user and members:
-            selected_user = random.choice(members)
-        
-        if not selected_user:
-            selected_user = user
+            display_name = target_username
+        else:
+            members = await get_chat_members(context.bot, chat.id) or []
+            if members:
+                selected = random.choice(members)
+                display_name = f"@{selected.username}" if selected.username else selected.full_name
+            else:
+                display_name = f"@{user.username}" if user.username else user.full_name
 
-        # Формирование диагноза
-        username = selected_user.username or selected_user.full_name
+        # Генерация диагноза
         data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
         diagnosis = (
             f"{random.choice(data['problems'])} "
@@ -137,27 +130,24 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).capitalize()
 
         await update.message.reply_text(
-            f"🔍 Диагноз для @{username} (уровень {level}):\n"
+            f"🔍 Диагноз для {display_name} (уровень {level}):\n"
             f"{diagnosis}!"
         )
 
     except RetryAfter as e:
-        await update.message.reply_text(f"⚠️ Слишком много запросов. Попробуйте через {e.retry_after} сек.")
+        await update.message.reply_text(f"⏳ Слишком быстро! Ждите {e.retry_after} сек.")
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        await update.message.reply_text("⚠️ Произошла ошибка при обработке команды")
+        logger.error(f"Ошибка: {str(e)}")
+        await update.message.reply_text("❌ Ошибка выполнения")
 
 def main():
     application = Application.builder().token(TOKEN).build()
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler(["diagnose", "dg"], diagnose))
-    
-    logger.info("Бот запущен...")
     application.run_polling()
 
 if __name__ == "__main__":
     if not TOKEN:
-        logger.error("❌ Требуется переменная окружения BOT_TOKEN!")
+        logger.error("❌ Укажите BOT_TOKEN в переменных окружения!")
         exit(1)
     main()
