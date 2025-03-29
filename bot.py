@@ -61,14 +61,10 @@ class ChatManager:
     def _convert_chat_id(self, chat_id: int) -> int:
         """Корректное преобразование ID чата для Pyrogram"""
         try:
-            # Если ID уже в формате супергруппы
             if str(chat_id).startswith("-100"):
                 return int(chat_id)
-            
-            # Если ID группы, но без префикса
             if chat_id < 0:
                 return int(f"-100{abs(chat_id)}")
-            
             return chat_id
         except Exception as e:
             logger.error(f"Ошибка конвертации ID: {str(e)}")
@@ -124,6 +120,7 @@ async def start(message: types.Message):
         "Команды:\n"
         "/diagnose [уровень] - ваш диагноз\n"
         "/dg @юзер [уровень] - диагноз участнику\n"
+        "/random_dg [уровень] - случайному участнику\n"
         "/rf - обновить список участников\n\n"
         "Уровни: 1-3 (по умолчанию 2)"
     )
@@ -178,6 +175,37 @@ async def user_diagnose(message: types.Message):
             f"🔍 Диагноз для @{user.username} (уровень {level}):\n"
             f"{diagnosis}!"
         )
+    except Exception as e:
+        await message.reply(f"⚠️ Ошибка: {str(e)}")
+
+@dp.message_handler(commands=['random_dg'])
+async def random_diagnose(message: types.Message):
+    """Диагноз случайному участнику"""
+    try:
+        chat_id = message.chat.id
+        args = message.get_args().split()
+        
+        # Получаем уровень
+        level = int(args[0]) if args and args[0].isdigit() else 2
+        level = max(1, min(3, level))
+        
+        # Получаем участников
+        members = chat_manager.members.get(chat_id, [])
+        if not members:
+            await message.reply("❌ Нет данных об участниках. Используйте /rf")
+            return
+            
+        # Выбираем случайного участника
+        random_user = random.choice(members)
+        username = random_user.username or random_user.first_name
+        
+        # Генерируем диагноз
+        diagnosis = generate_diagnosis(level)
+        await message.reply(
+            f"🎲 Случайный диагноз для {username} (уровень {level}):\n"
+            f"{diagnosis}!"
+        )
+        
     except Exception as e:
         await message.reply(f"⚠️ Ошибка: {str(e)}")
 
