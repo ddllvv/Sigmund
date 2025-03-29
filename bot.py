@@ -2,7 +2,13 @@ import os
 import random
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ChatMemberHandler,
+    ChatJoinRequestHandler
+)
 
 # Настройка логгирования
 logging.basicConfig(
@@ -31,56 +37,90 @@ DIAGNOSIS_DATA = {
     }
 }
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    await update.message.reply_text(
-        "👨⚕️ Бот-диагност для групп\n\n"
-        "Используйте команды:\n"
-        "/diagnose или /dg [@юзер] [уровень 1-3]\n"
-        "Примеры:\n"
-        "/dg 2 - случайный участник\n"
-        "/diagnose @username 3"
-    )
+class ChatTracker:
+    """Класс для отслеживания участников чата"""
+    def __init__(self):
+        self.chat_data = {}
 
-async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Улучшенный обработчик с обходом ограничений"""
+    async def update_members(self, chat_id: int, bot):
+        """Обновление списка участников через API"""
+        try:
+            members = []
+            async for member in bot.get_chat_members(chat_id):
+                if not member.user.is_bot:
+                    members.append(member.user)
+            self.chat_data[chat_id] = members
+            logger.info(f"Обновлены участники чата {chat_id}")
+        except Exception as e:
+            logger.error(f"Ошибка обновления: {str(e)}")
+
+    def get_random_member(self, chat_id: int):
+        """Получение случайного участника"""
+        members = self.chat_data.get(chat_id, [])
+        return random.choice(members) if members else None
+
+tracker = ChatTracker()
+
+async def handle_chat_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик изменений в чате"""
+    chat_id = update.effective_chat.id
+    await tracker.update_members(chat_id, context.bot)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Инициализация бота в чате"""
+    chat_id = update.effective_chat.id
+    await tracker.update_members(chat_id, context.bot)
+    
+    text = (
+        "👨⚕️ Медицинский бот-диагност\n\n"
+        "Доступные команды:\n"
+        "/start - показать это сообщение\n"
+        "/diagnose [@юзер] [уровень] - поставить диагноз\n"
+        "/dg [@юзер] [уровень] - сокращенная команда\n\n"
+        "Примеры:\n"
+        "/dg @user123 3\n"
+        "/diagnose 2"
+    )
+    await update.message.reply_text(text)
+
+async def diagnose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Основная логика диагноза"""
     try:
         chat = update.effective_chat
         args = context.args or []
         
+        # Проверка типа чата
         if chat.type not in ["group", "supergroup"]:
-            await update.message.reply_text("🚫 Работает только в группах!")
+            await update.message.reply_text("⚠️ Эта команда работает только в группах!")
             return
 
         # Парсинг аргументов
         level = 2
-        target = None
+        target_username = None
         
         for arg in args:
             if arg.startswith("@"):
-                target = arg  # Сохраняем оригинальное упоминание
+                target_username = arg[1:]  # Убираем @ для поиска
             elif arg.isdigit() and 1 <= int(arg) <= 3:
                 level = int(arg)
 
-        # Если есть упоминание - используем как есть
-        if target:
-            username = target
+        # Определение пользователя
+        if target_username:
+            # Поиск по username
+            member = next(
+                (m for m in tracker.chat_data.get(chat.id, []) 
+                 if m.username and m.username.lower() == target_username.lower()),
+                None
+            )
+            username = f"@{target_username}"
         else:
-            # Пытаемся найти случайного пользователя из истории чата
-            try:
-                members = []
-                async for message in chat.get_messages(limit=100):
-                    user = message.from_user
-                    if user and not user.is_bot and user.username:
-                        members.append(f"@{user.username}")
-                
-                if members:
-                    username = random.choice(members)
-                else:
-                    username = "случайного участника"
-            except Exception as e:
-                username = "случайного участника"
-                logger.warning(f"Не удалось получить историю чата: {e}")
+            # Случайный выбор
+            member = tracker.get_random_member(chat.id)
+            username = (
+                f"@{member.username}" 
+                if member and member.username 
+                else (member.full_name if member else "Случайный участник")
+            )
 
         # Генерация диагноза
         data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
@@ -97,21 +137,30 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка: {str(e)}")
-        await update.message.reply_text("⚠️ Ошибка выполнения команды")
+        await update.message.reply_text("⚠️ Произошла ошибка при выполнении команды")
 
 def main():
+    # Создаем и настраиваем приложение
     application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler(["diagnose", "dg"], diagnose))
     
-    logger.info("Бот запущен...")
+    # Регистрируем обработчики
+    handlers = [
+        CommandHandler(["start", "help"], start),
+        CommandHandler(["diagnose", "dg"], diagnose_command),
+        ChatMemberHandler(handle_chat_updates),
+        ChatJoinRequestHandler(handle_chat_updates)
+    ]
+    
+    application.add_handlers(handlers)
+    
+    # Запускаем бота
     application.run_polling(
-        drop_pending_updates=True,  # Решение проблемы Conflict
+        drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES
     )
 
 if __name__ == "__main__":
     if not TOKEN:
-        logger.error("❌ Требуется переменная BOT_TOKEN!")
+        logger.error("❌ Требуется переменная окружения BOT_TOKEN!")
         exit(1)
     main()
