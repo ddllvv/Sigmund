@@ -34,16 +34,17 @@ DIAGNOSIS_DB = {
 }
 
 async def get_random_member(chat_id, bot):
-    """Получает случайного участника чата"""
+    """Получает случайного участника чата (исправленная версия)"""
     try:
         members = []
-        async for member in bot.get_chat_members(chat_id):
-            user = member.user
-            if not user.is_bot and (user.username or user.first_name):
-                members.append(user)
+        async with bot:
+            async for member in bot.get_chat_members(chat_id):
+                user = member.user
+                if not user.is_bot and (user.username or user.first_name):
+                    members.append(user)
         return random.choice(members) if members else None
     except Exception as e:
-        logger.error(f"Ошибка: {str(e)}")
+        logger.error(f"Ошибка получения участников: {str(e)}")
         return None
 
 async def generate_diagnosis(level: int) -> str:
@@ -58,23 +59,19 @@ async def generate_diagnosis(level: int) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
-    help_text = (
+    await update.message.reply_text(
         "🩺 Бот-диагност для групп!\n"
-        "Добавьте меня в группу и используйте:\n"
-        "/diagnose [1-3] - случайный диагноз участнику\n"
+        "Используйте /diagnose [1-3]\n"
         "Пример: /diagnose 3"
     )
-    await update.message.reply_text(help_text)
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /diagnose"""
     try:
-        # Проверка типа чата
         if update.effective_chat.type not in ['group', 'supergroup']:
             await update.message.reply_text("❌ Работаю только в группах!")
             return
 
-        # Получаем случайного пользователя
         user = await get_random_member(
             update.effective_chat.id, 
             context.bot
@@ -83,18 +80,12 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😢 Нет подходящих пользователей!")
             return
 
-        # Определяем уровень сложности
-        try:
-            level = int(context.args[0]) if context.args else 2
-        except:
-            level = 2
+        level = int(context.args[0]) if context.args else 2
         level = max(1, min(3, level))
 
-        # Генерируем диагноз
         diagnosis = await generate_diagnosis(level)
         username = f"@{user.username}" if user.username else user.first_name
 
-        # Отправляем результат
         await update.message.reply_text(
             f"🔍 Результат для {username}:\n"
             f"Диагноз: {diagnosis.capitalize()}!"
@@ -102,17 +93,13 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка: {str(e)}")
-        await update.message.reply_text("⚠️ Произошла ошибка, попробуйте позже")
+        await update.message.reply_text("⚠️ Ошибка, попробуйте позже")
 
 def main():
-    # Создаем приложение
     application = Application.builder().token(TOKEN).build()
-
-    # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("diagnose", diagnose))
-
-    # Запускаем бота
+    
     logger.info("Бот запущен в режиме polling...")
     application.run_polling()
 
