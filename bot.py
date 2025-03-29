@@ -1,9 +1,8 @@
 import os
 import random
 import logging
-from telethon import TelegramClient, events
-from telethon.tl.functions.channels import GetParticipantsRequest
-from telethon.tl.types import ChannelParticipantsRecent
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Настройка логгирования
 logging.basicConfig(
@@ -12,10 +11,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация
-API_ID = int(os.getenv('API_ID'))
-API_HASH = os.getenv('API_HASH')
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+TOKEN = os.getenv('BOT_TOKEN')
 
 DIAGNOSIS_DATA = {
     1: {
@@ -35,60 +31,21 @@ DIAGNOSIS_DATA = {
     }
 }
 
-async def get_chat_members(client, chat_id):
-    """Получение участников чата"""
+async def get_chat_members(bot, chat_id):
+    """Безопасное получение участников через Bot API"""
     try:
-        participants = await client(GetParticipantsRequest(
-            channel=chat_id,
-            filter=ChannelParticipantsRecent(),
-            offset=0,
-            limit=100,
-            hash=0
-        ))
-        return [user for user in participants.users if not user.bot]
+        members = []
+        async for member in bot.get_chat_members(chat_id):
+            if not member.user.is_bot:
+                members.append(member.user)
+        return members
     except Exception as e:
         logger.error(f"Ошибка получения участников: {str(e)}")
         return []
 
-async def generate_diagnosis(level):
-    """Генерация диагноза"""
-    level = max(1, min(3, level))
-    data = DIAGNOSIS_DATA[level]
-    return (
-        f"{random.choice(data['problems'])} "
-        f"{random.choice(data['parts'])} "
-        f"{random.choice(data['severity'])}"
-    )
-
-async def send_diagnosis(event, level, target_user=None):
-    """Отправка диагноза"""
-    try:
-        chat = await event.get_chat()
-        members = await get_chat_members(event.client, chat.id)
-        
-        if not members:
-            await event.reply("😢 В чате нет участников для диагностики")
-            return
-            
-        user = target_user or random.choice(members)
-        username = user.username or user.first_name
-        diagnosis = await generate_diagnosis(level)
-        
-        await event.reply(
-            f"🔍 Диагноз для @{username} (уровень {level}):\n"
-            f"{diagnosis}!"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка: {str(e)}")
-        await event.reply("⚠️ Произошла ошибка")
-
-# Инициализация клиента
-client = TelegramClient('diagnosis_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-
-@client.on(events.NewMessage(pattern='/start'))
-async def start_handler(event):
-    """Обработчик команды /start"""
-    help_text = (
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /start"""
+    await update.message.reply_text(
         "👨⚕️ Бот-диагност для групп\n\n"
         "Команды:\n"
         "/diagnose [@юзер] [уровень 1-3]\n"
@@ -96,30 +53,66 @@ async def start_handler(event):
         "/diagnose 2 - случайному участнику\n"
         "/diagnose @username 3"
     )
-    await event.reply(help_text)
 
-@client.on(events.NewMessage(pattern='/diagnose'))
-async def diagnose_handler(event):
-    """Обработчик команды /diagnose"""
+async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /diagnose"""
     try:
-        args = event.text.split()[1:]
+        chat = update.effective_chat
+        args = context.args or []
+        
+        # Проверка типа чата
+        if chat.type not in ['group', 'supergroup']:
+            await update.message.reply_text("🚫 Работает только в группах!")
+            return
+
+        # Получаем участников
+        members = await get_chat_members(context.bot, chat.id)
+        if not members:
+            await update.message.reply_text("😢 Нет участников для диагностики")
+            return
+
+        # Парсинг аргументов
         level = 2
         target_user = None
         
-        # Парсинг аргументов
         for arg in args:
             if arg.startswith('@'):
-                target_user = next((u for u in await get_chat_members(event.client, event.chat_id) 
-                                  if u.username == arg[1:]), None)
+                username = arg[1:].lower()
+                target_user = next((u for u in members if u.username and u.username.lower() == username), None)
             elif arg.isdigit():
-                level = int(arg)
-        
-        await send_diagnosis(event, level, target_user)
-        
+                level = max(1, min(3, int(arg)))
+
+        # Выбор пользователя
+        user = target_user or random.choice(members)
+        username = f"@{user.username}" if user.username else user.first_name
+
+        # Генерация диагноза
+        data = DIAGNOSIS_DATA[max(1, min(3, level))]
+        diagnosis = (
+            f"{random.choice(data['problems'])} "
+            f"{random.choice(data['parts'])} "
+            f"{random.choice(data['severity'])}"
+        )
+
+        await update.message.reply_text(
+            f"🔍 Диагноз для {username} (уровень {level}):\n"
+            f"{diagnosis.capitalize()}!"
+        )
+
     except Exception as e:
-        logger.error(f"Ошибка обработки команды: {str(e)}")
-        await event.reply("❌ Некорректная команда")
+        logger.error(f"Ошибка: {str(e)}")
+        await update.message.reply_text("⚠️ Ошибка выполнения команды")
+
+def main():
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("diagnose", diagnose))
+    
+    logger.info("Бот запущен...")
+    application.run_polling()
 
 if __name__ == '__main__':
-    logger.info("Бот запущен...")
-    client.run_until_disconnected()
+    if not TOKEN:
+        logger.error("❌ Требуется переменная BOT_TOKEN!")
+        exit(1)
+    main()
