@@ -32,11 +32,10 @@ DIAGNOSIS_DATA = {
 }
 
 async def get_chat_members(bot, chat_id):
-    """Правильное получение участников для PTB 20.x+"""
+    """Получение участников чата через Bot API"""
     try:
-        chat = await bot.get_chat(chat_id)
         members = []
-        async for member in chat.get_members():
+        async for member in bot.get_chat_members(chat_id):
             if not member.user.is_bot:
                 members.append(member.user)
         return members
@@ -49,33 +48,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👨⚕️ Бот-диагност для групп\n\n"
         "Используйте команды:\n"
-        "/diagnose [@юзер] [уровень 1-3]\n"
+        "/diagnose или /dg [@юзер] [уровень 1-3]\n"
         "Примеры:\n"
-        "/diagnose 2 - случайному участнику\n"
+        "/dg 2 - случайному участнику\n"
         "/diagnose @username 3"
     )
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /diagnose"""
+    """Обработчик команд /diagnose и /dg"""
     try:
         chat = update.effective_chat
         args = context.args or []
         
-        # Проверка типа чата
         if chat.type not in ["group", "supergroup"]:
             await update.message.reply_text("🚫 Работает только в группах!")
             return
 
-        # Получаем участников
         members = await get_chat_members(context.bot, chat.id)
         if not members:
             await update.message.reply_text("😢 Нет участников для диагностики")
             return
 
-        # Парсинг аргументов
         level = 2
         target_user = None
         
+        # Парсинг аргументов с учетом любого порядка
         for arg in args:
             if arg.startswith("@"):
                 username = arg[1:].lower()
@@ -83,15 +80,12 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (u for u in members if u.username and u.username.lower() == username),
                     None
                 )
-            elif arg.isdigit():
-                level = max(1, min(3, int(arg)))
+            elif arg.isdigit() and 1 <= int(arg) <= 3:
+                level = int(arg)
 
-        # Выбор пользователя
         user = target_user or random.choice(members)
         username = f"@{user.username}" if user.username else user.first_name
 
-        # Генерация диагноза
-        level = max(1, min(3, level))
         data = DIAGNOSIS_DATA[level]
         diagnosis = (
             f"{random.choice(data['problems'])} "
@@ -112,6 +106,7 @@ def main():
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("diagnose", diagnose))
+    application.add_handler(CommandHandler("dg", diagnose))  # Добавлен короткий алиас
     
     logger.info("Бот запущен...")
     application.run_polling(drop_pending_updates=True)
