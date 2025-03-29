@@ -1,14 +1,9 @@
 import os
+import random
 import logging
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Настройка логгирования
 logging.basicConfig(
@@ -17,51 +12,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация данных для диагнозов
+app = Flask(__name__)
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+application = Application.builder().token(TOKEN).build()
+
+# База данных диагнозов с числовыми уровнями
 DIAGNOSIS_DATA = {
     "diseases": {
-        "мягкий": ["Покраснение", "Зуд", "Легкое недомогание", "Икота"],
-        "средний": ["Паралич", "Гастрит", "Пародонтоз", "Аритмия"],
-        "жесткий": ["Недоразвитие", "Гипертрофия", "Дегенерация", "Тромбоз"]
+        1: ["Покраснение", "Зуд", "Легкое недомогание", "Икота"],
+        2: ["Паралич", "Гастрит", "Пародонтоз", "Аритмия"],
+        3: ["Недоразвитие", "Гипертрофия", "Дегенерация", "Тромбоз"]
     },
     "body_parts": {
-        "мягкий": ["уха", "носа", "пальца"],
-        "средний": ["ребра", "колена", "локтя"],
-        "жесткий": ["гипоталамуса", "селезенки", "надкостницы"]
+        1: ["уха", "носа", "пальца"],
+        2: ["ребра", "колена", "локтя"],
+        3: ["гипоталамуса", "селезенки", "надкостницы"]
     },
     "severity": {
-        "мягкий": ["начальной стадии", "легкой формы"],
-        "средний": ["второй степени", "средней тяжести"],
-        "жесткий": ["терминальной стадии", "с осложнениями"]
+        1: ["начальной стадии", "легкой формы"],
+        2: ["второй степени", "средней тяжести"],
+        3: ["терминальной стадии", "с осложнениями"]
     },
     "modifiers": {
-        "жесткий": ["внезапного происхождения", "с метастазами"]
+        3: ["внезапного происхождения", "с метастазами"]
     }
 }
 
-app = Flask(__name__)
-application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
-
-# Генератор диагнозов
-def generate_diagnosis(severity_level):
-    import random
+def generate_diagnosis(level: int):
+    """Генерирует диагноз для указанного уровня"""
+    level = max(1, min(3, level))  # Ограничение уровня 1-3
     
-    disease = random.choice(DIAGNOSIS_DATA["diseases"][severity_level])
-    body_part = random.choice(DIAGNOSIS_DATA["body_parts"][severity_level])
-    severity = random.choice(DIAGNOSIS_DATA["severity"][severity_level])
+    disease = random.choice(DIAGNOSIS_DATA["diseases"][level])
+    body_part = random.choice(DIAGNOSIS_DATA["body_parts"][level])
+    severity = random.choice(DIAGNOSIS_DATA["severity"][level])
     
     modifier = ""
-    if severity_level == "жесткий" and random.random() < 0.5:
-        modifier = ", " + random.choice(DIAGNOSIS_DATA["modifiers"]["жесткий"])
+    if level == 3 and random.random() < 0.5:
+        modifier = ", " + random.choice(DIAGNOSIS_DATA["modifiers"][3])
     
     templates = [
         f"{disease} {body_part} {severity}{modifier}",
         f"Диагноз: {disease} {body_part}{modifier} ({severity})"
     ]
-    
     return random.choice(templates)
 
-# Получение случайного пользователя
 async def get_random_member(chat_id, context):
     members = []
     async for member in context.bot.get_chat_members(chat_id):
@@ -69,48 +63,36 @@ async def get_random_member(chat_id, context):
             members.append(member.user)
     return random.choice(members) if members else None
 
-# Обработчик команды /diagnose
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    severity_level = "средний"
-    if context.args:
-        level = context.args[0].lower()
-        if level in ["мягкий", "средний", "жесткий"]:
-            severity_level = level
+    try:
+        level = int(context.args[0]) if context.args else 2
+    except (ValueError, IndexError):
+        level = 2
     
     user = await get_random_member(update.effective_chat.id, context)
     if not user:
         await update.message.reply_text("В чате нет пользователей 😢")
         return
     
-    diagnosis = generate_diagnosis(severity_level)
-    response = f"🔍 Результат обследования для @{user.username}:\n{diagnosis}"
+    diagnosis = generate_diagnosis(level)
+    response = f"🔍 Результат обследования для @{user.username} (уровень {level}):\n{diagnosis}"
     await update.message.reply_text(response)
 
 # Регистрация обработчиков
 application.add_handler(CommandHandler("diagnose", diagnose))
 
-# Вебхук для PythonAnywhere
-@app.route('/' + os.getenv('TELEGRAM_TOKEN'), methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 async def webhook():
     await application.update_queue.put(
-        Update.de_json(data=request.json, bot=application.bot)
-    return 'ok', 200
-
-@app.route('/')
-def index():
-    return 'Diagnosis Bot is running!'
+        Update.de_json(await request.get_json(), application.bot)
+    )
+    return '', 200
 
 if __name__ == '__main__':
-    # Настройка вебхука при первом запуске
-    if not os.getenv('PYTHONANYWHERE_DOMAIN'):
-        # Локальный запуск
-        application.run_polling()
-    else:
-        # Запуск на PythonAnywhere
-        domain = os.getenv('PYTHONANYWHERE_DOMAIN')
-        application.run_webhook(
-            listen='0.0.0.0',
-            port=5000,
-            url_path=os.getenv('TELEGRAM_TOKEN'),
-            webhook_url=f'https://{domain}/{os.getenv('TELEGRAM_TOKEN')}'
+    PORT = int(os.environ.get('PORT', 5000))
+    application.run_webhook(
+        listen='0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=os.environ.get('WEBHOOK_URL') + '/webhook'
 )
