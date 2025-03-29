@@ -9,7 +9,7 @@ DIAGNOSIS_DATA = {
     1: {
         'problems': ['Покраснение', 'Зуд', 'Икота'],
         'parts': ['уха', 'носа', 'пальца'],
-        'severity': ['лёгкой формы']
+        'severity': ['начальной стадии']
     },
     2: {
         'problems': ['Паралич', 'Гастрит', 'Аритмия'],
@@ -23,52 +23,54 @@ DIAGNOSIS_DATA = {
     }
 }
 
-async def get_active_members(chat_id, bot):
+async def get_members(chat_id, bot):
     members = []
-    async for member in bot.get_chat_members(chat_id):
-        if not member.user.is_bot and member.user.username:
-            members.append(member.user)
+    try:
+        async for member in bot.get_chat_members(chat_id):
+            if not member.user.is_bot:
+                members.append(member.user)
+    except Exception as e:
+        print(f"Ошибка получения участников: {e}")
     return members
-
-async def generate_diagnosis(level):
-    data = DIAGNOSIS_DATA[max(1, min(3, level))]
-    return (
-        f"{random.choice(data['problems'])} "
-        f"{random.choice(data['parts'])} "
-        f"{random.choice(data['severity'])}"
-    )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👨⚕️ Бот-диагност для групп\n\n"
-        "Добавьте меня в группу как администратора и используйте:\n"
-        "/diagnose [1-3] - поставить диагноз случайному участнику\n"
+        "🩺 Бот-диагност для групп\n"
+        "Используйте /diagnose [1-3]\n"
         "Пример: /diagnose 3"
     )
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type not in ['group', 'supergroup']:
-        return
-    
     try:
-        members = await get_active_members(update.effective_chat.id, context.bot)
+        chat = update.effective_chat
+        if chat.type not in ['group', 'supergroup']:
+            return
+
+        members = await get_members(chat.id, context.bot)
         if not members:
-            await update.message.reply_text("😕 В чате нет подходящих участников")
+            await update.message.reply_text("😢 Нет доступных участников")
             return
 
         user = random.choice(members)
+        username = user.username or user.first_name
         level = int(context.args[0]) if context.args else 2
-        diagnosis = await generate_diagnosis(level)
+        level = max(1, min(3, level))
+
+        data = DIAGNOSIS_DATA[level]
+        diagnosis = (
+            f"{random.choice(data['problems'])} "
+            f"{random.choice(data['parts'])} "
+            f"{random.choice(data['severity'])}"
+        )
 
         await update.message.reply_text(
-            f"🔍 Диагноз для @{user.username}:\n"
+            f"🔍 Диагноз для @{username}:\n"
             f"{diagnosis.capitalize()}!"
         )
-        
-    except Exception:
-        await update.message.reply_text("⚠️ Ошибка. Проверьте:\n"
-                                      "1. Я администратор\n"
-                                      "2. В чате есть участники")
+
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        await update.message.reply_text("⚠️ Ошибка выполнения команды")
 
 def main():
     application = Application.builder().token(TOKEN).build()
@@ -78,6 +80,6 @@ def main():
 
 if __name__ == '__main__':
     if not TOKEN:
-        print("❌ Необходим TELEGRAM_TOKEN!")
+        print("❌ Требуется TELEGRAM_TOKEN!")
         exit(1)
     main()
