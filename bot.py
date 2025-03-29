@@ -1,24 +1,20 @@
 import os
 import random
 import logging
-from datetime import datetime, timedelta
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    ChatMemberHandler,
-    ChatJoinRequestHandler
-)
+from pyrogram import Client, filters
+from pyrogram.errors import RPCError
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
 
-# Настройка логгирования
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv("BOT_TOKEN")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 DIAGNOSIS_DATA = {
     1: {
@@ -38,200 +34,116 @@ DIAGNOSIS_DATA = {
     }
 }
 
-class ChatData:
-    """Класс для управления данными чата"""
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
+pyro_client = Client(
+    "my_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+class ChatManager:
     def __init__(self):
         self.members = {}
-        self.last_update = {}
-
-    async def update_members(self, chat_id: int, bot, force: bool = False):
-        """Основной метод обновления участников"""
+    
+    async def update_members(self, chat_id: int):
         try:
-            logger.info(f"🔄 Начало обновления для чата {chat_id}")
-            
-            # Всегда обновляем при принудительном запросе
-            if not force and not self.needs_update(chat_id):
-                return
+            async with pyro_client:
+                members = []
+                async for member in pyro_client.get_chat_members(chat_id):
+                    if not member.user.is_bot:
+                        members.append(member.user)
+                self.members[chat_id] = members
+                logger.info(f"Обновлено участников: {len(members)}")
+        except RPCError as e:
+            logger.error(f"Pyrogram error: {str(e)}")
 
-            # Проверка прав администратора
-            is_admin = await self._is_admin(bot, chat_id)
-            members = []
+chat_manager = ChatManager()
 
-            if is_admin:
-                logger.info("🔐 Используем метод администратора")
-                async for member in bot.get_chat_members(chat_id):
-                    user = member.user
-                    if not user.is_bot:
-                        members.append(user)
-                        logger.info(f"👤 Добавлен: {user.username or user.full_name}")
-            else:
-                logger.warning("⚠️ Используем резервный метод")
-                async for message in bot.get_chat_history(chat_id, limit=200):
-                    user = message.from_user
-                    if user and not user.is_bot and user not in members:
-                        members.append(user)
+def generate_diagnosis(level: int) -> str:
+    data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
+    return (
+        f"{random.choice(data['problems'])} "
+        f"{random.choice(data['parts'])} "
+        f"{random.choice(data['severity'])}"
+    ).capitalize()
 
-            self.members[chat_id] = members
-            self.last_update[chat_id] = datetime.now()
-            logger.info(f"✅ Успешно обновлено: {len(members)} участников")
-
-        except Exception as e:
-            logger.error(f"🚨 Ошибка обновления: {str(e)}")
-            await self._fallback_update(chat_id, bot)
-
-    async def _is_admin(self, bot, chat_id: int) -> bool:
-        """Проверка прав администратора"""
-        try:
-            me = await bot.get_me()
-            admins = await bot.get_chat_administrators(chat_id)
-            return any(admin.user.id == me.id for admin in admins)
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки прав: {str(e)}")
-            return False
-
-    def needs_update(self, chat_id: int) -> bool:
-        """Проверка необходимости обновления"""
-        last = self.last_update.get(chat_id)
-        return not last or (datetime.now() - last) > timedelta(minutes=30)
-
-chat_data = ChatData()
-
-async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик событий чата"""
-    try:
-        chat_id = update.effective_chat.id
-        await chat_data.update_members(chat_id, context.bot)
-    except Exception as e:
-        logger.error(f"Ошибка обработки события: {str(e)}")
-
-async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Принудительное обновление списка участников"""
-    try:
-        chat_id = update.effective_chat.id
-        await chat_data.update_members(chat_id, context.bot, force=True)
-        
-        members = chat_data.members.get(chat_id, [])
-        member_list = "\n".join([f"• {m.username or m.full_name}" for m in members]) or "Пусто"
-        
-        await update.message.reply_text(
-            f"🔄 Обновлено участников: {len(members)}\n"
-            f"Список:\n{member_list}"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обновления: {str(e)}")
-        await update.message.reply_text("🚨 Ошибка обновления списка")
-
-async def self_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагноз для себя"""
-    try:
-        user = update.effective_user
-        args = context.args or []
-        level = 2
-
-        # Парсинг уровня
-        for arg in args:
-            if arg.isdigit() and 1 <= int(arg) <= 3:
-                level = int(arg)
-
-        data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
-        diagnosis = (
-            f"{random.choice(data['problems'])} "
-            f"{random.choice(data['parts'])} "
-            f"{random.choice(data['severity'])}"
-        ).capitalize()
-
-        await update.message.reply_text(
-            f"🩺 Диагноз для @{user.username} (уровень {level}):\n"
-            f"{diagnosis}!"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка диагноза: {str(e)}")
-        await update.message.reply_text("⚠️ Ошибка выполнения команды")
-
-async def user_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагноз для другого пользователя"""
-    try:
-        chat = update.effective_chat
-        args = context.args or []
-        
-        if chat.type not in ["group", "supergroup"]:
-            await update.message.reply_text("🚫 Команда работает только в группах!")
-            return
-
-        await chat_data.update_members(chat.id, context.bot)
-        members = chat_data.members.get(chat.id, [])
-
-        # Поиск целевого пользователя
-        target_user = None
-        level = 2
-        
-        for arg in args:
-            if arg.startswith("@"):
-                search_username = arg[1:].lower()
-                target_user = next(
-                    (u for u in members 
-                     if u.username and u.username.lower() == search_username),
-                    None
-                )
-            elif arg.isdigit() and 1 <= int(arg) <= 3:
-                level = int(arg)
-
-        if not target_user:
-            await update.message.reply_text("❌ Пользователь не найден!")
-            return
-
-        data = DIAGNOSIS_DATA.get(level, DIAGNOSIS_DATA[2])
-        diagnosis = (
-            f"{random.choice(data['problems'])} "
-            f"{random.choice(data['parts'])} "
-            f"{random.choice(data['severity'])}"
-        ).capitalize()
-
-        username = f"@{target_user.username}" if target_user.username else target_user.full_name
-        await update.message.reply_text(
-            f"🔍 Диагноз для {username} (уровень {level}):\n"
-            f"{diagnosis}!"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка диагноза: {str(e)}")
-        await update.message.reply_text("⚠️ Ошибка выполнения команды")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    help_text = (
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    text = (
         "👨⚕️ Бот-диагност\n\n"
-        "Доступные команды:\n"
-        "/start - показать это сообщение\n"
+        "Команды:\n"
         "/diagnose [уровень] - ваш диагноз\n"
-        "/dg @юзер [уровень] - диагноз для участника\n"
+        "/dg @юзер [уровень] - диагноз участнику\n"
         "/rf - обновить список участников\n\n"
-        "Примеры:\n"
-        "/diagnose 3 - ваш диагноз уровня 3\n"
-        "/dg @user 2 - диагноз уровня 2 для @user"
+        "Уровни: 1-3 (по умолчанию 2)\n"
+        "Пример: /dg @user 3"
     )
-    await update.message.reply_text(help_text)
+    await message.reply(text)
 
-def main():
-    application = Application.builder().token(TOKEN).build()
-    
-    # Регистрация обработчиков
-    handlers = [
-        CommandHandler("start", start),
-        CommandHandler("diagnose", self_diagnose),
-        CommandHandler("dg", user_diagnose),
-        CommandHandler("rf", refresh),
-        ChatMemberHandler(handle_chat_event),
-        ChatJoinRequestHandler(handle_chat_event)
-    ]
-    
-    application.add_handlers(handlers)
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
-    )
+@dp.message_handler(commands=['rf'])
+async def refresh(message: types.Message):
+    try:
+        chat_id = message.chat.id
+        await chat_manager.update_members(chat_id)
+        members = chat_manager.members.get(chat_id, [])
+        
+        member_list = "\n".join([f"• {m.username or m.first_name}" for m in members])
+        await message.reply(f"🔄 Участников: {len(members)}\n{member_list}")
+        
+    except Exception as e:
+        logger.error(str(e))
+        await message.reply("❌ Ошибка обновления")
+
+@dp.message_handler(commands=['diagnose'])
+async def self_diagnose(message: types.Message):
+    try:
+        args = message.get_args().split()
+        level = 2
+        
+        if args and args[0].isdigit() and 1 <= int(args[0]) <= 3:
+            level = int(args[0])
+            
+        diagnosis = generate_diagnosis(level)
+        await message.reply(f"🩺 Ваш диагноз (уровень {level}):\n{diagnosis}!")
+        
+    except Exception as e:
+        logger.error(str(e))
+        await message.reply("⚠️ Ошибка выполнения")
+
+@dp.message_handler(commands=['dg'])
+async def user_diagnose(message: types.Message):
+    try:
+        chat_id = message.chat.id
+        args = message.get_args().split()
+        
+        if not args:
+            await message.reply("❌ Укажите @username")
+            return
+            
+        target_username = args[0].lstrip('@')
+        level = 2
+        
+        if len(args) > 1 and args[1].isdigit() and 1 <= int(args[1]) <= 3:
+            level = int(args[1])
+            
+        members = chat_manager.members.get(chat_id, [])
+        user = next((u for u in members if u.username == target_username), None)
+        
+        if not user:
+            await message.reply("❌ Пользователь не найден")
+            return
+            
+        diagnosis = generate_diagnosis(level)
+        await message.reply(
+            f"🔍 Диагноз для @{target_username} (уровень {level}):\n"
+            f"{diagnosis}!"
+        )
+        
+    except Exception as e:
+        logger.error(str(e))
+        await message.reply("⚠️ Ошибка выполнения")
 
 if __name__ == "__main__":
-    if not TOKEN:
-        logger.error("❌ Требуется переменная окружения BOT_TOKEN!")
-        exit(1)
-    main()
+    executor.start_polling(dp, skip_updates=True)
